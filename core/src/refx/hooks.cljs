@@ -19,13 +19,13 @@
 
 (defn get-subscription-hook
   "React hook to subscribe to signals."
-  [{:keys [registry subscription-cache subscriber]}]
+  [{:keys [registry subscription-cache subscription-handler]}]
   (fn use-sub
     [query-v]
      ;; Subs are cached, so no need to memoize them again.  Retrieving them
      ;; on every render allows us to pick up changes in dev workflows, where
      ;; we use clear-subscription-cache! on refresh.
-    (let [sub (subscriber query-v)
+    (let [sub (subscription-handler query-v)
           [subscribe snapshot]
           (react/useMemo
            (fn []

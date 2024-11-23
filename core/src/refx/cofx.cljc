@@ -35,7 +35,7 @@
 ;; :db
 ;;
 ;; Adds to coeffects the value in `app-db`, under the key `:db`
-(defn init [{:keys [registry]}]
+(defn init [{:keys [registry app-db]}]
   (register
    registry
    :db

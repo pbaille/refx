@@ -86,7 +86,7 @@
 
   (sub
     [this query-v]
-    (subscription-handler this query-v))
+    (subscription-handler query-v))
 
   (reg-sub [this query-id compute-fn]
     (subs/register this query-id (constantly app-db) compute-fn))
@@ -105,7 +105,7 @@
 
   (reg-fx
     [this id handler]
-    (effects/register this id handler))
+    (effects/register registry id handler))
 
   (clear-fx [this]
     (registry/clear! registry effects/kind))
@@ -163,6 +163,7 @@
         event-handler (events/mk-handler reg)
         dispatcher (dispatch/mk-dispatcher {:event-handler event-handler})
         do-fx (effects/init {:app-db db :dispatcher dispatcher :registry reg})
-        inject-db (cofx/init {:registry reg})]
-    ;;[registry app-db subscription-cache subscription-handler dispatcher interceptors]
-    (->Frame reg db subscription-cache subscription-handler dispatcher [do-fx inject-db])))
+        inject-db (cofx/init {:registry reg :app-db db})
+        frame (->Frame reg db subscription-cache subscription-handler dispatcher [do-fx inject-db])]
+    #?(:cljs (cljs.pprint/pprint frame))
+    frame))
