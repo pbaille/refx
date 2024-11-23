@@ -39,42 +39,52 @@
 
 ;; --- subscription cache -----------------------------------------------------
 
-(defonce sub-cache (atom {}))
-
-(defn- cache-lookup [query-v]
-  (get @sub-cache query-v))
-
-(defn- cache-add! [query-v sub]
-  (swap! sub-cache assoc query-v sub))
-
-(defn- cache-remove! [query-v sub]
-  (swap! sub-cache (fn [cache]
-                     (if (identical? sub (get cache query-v))
-                       (dissoc cache query-v)
-                       cache))))
-
-;; --- subscriptions ----------------------------------------------------------
+(defprotocol ICache
+  (-cache-lookup [this query-v])
+  (-cache-add! [this query-v sub])
+  (-cache-remove! [this query-v sub])
+  (-cache-dispose! [this sub])
+  (-cache-clear! [this])
+  (-sub-orphaned [this sub]))
 
 (defprotocol ISub
   (-query-v [this])
   (-orphan? [this])
   (-dispose! [this]))
 
-(defn- dispose! [sub]
-  (cache-remove! (-query-v sub) sub)
-  (-dispose! sub))
+(extend-protocol ICache
+  #?(:cljs Atom
+     :clj clojure.lang.Atom)
+  (-cache-lookup [this query-v]
+    (get @this query-v))
 
+  (-cache-add! [this query-v sub]
+    (swap! this assoc query-v sub))
+
+  (-cache-remove! [this query-v sub]
+    (swap! this (fn [cache]
+                  (if (identical? sub (get cache query-v))
+                    (dissoc cache query-v)
+                    cache))))
+  (-cache-dispose! [this sub]
+    (swap! this (fn [cache]
+                  (let [query-v (-query-v sub)]
+                    (if (identical? sub (get cache query-v))
+                      (dissoc cache query-v)
+                      cache))))
+    (-dispose! sub))
+  (-cache-clear! [this]
+    (doseq [[_ sub] @this]
+      (-cache-dispose! this sub)))
 ;; TODO This could be changed to support "garbage collection": Don't dispose
 ;; right away, but keep subscriptions around for a while in case they are
 ;; requested again.
 ;; E.g. we could trigger background jobs using window.requestIdleCallback()
-(defn- sub-orphaned [sub]
-  (interop/next-tick #(when (-orphan? sub)
-                        (dispose! sub))))
+  (-sub-orphaned [this sub]
+    (interop/next-tick #(when (-orphan? sub)
+                          (-cache-dispose! this sub)))))
 
-(defn clear-subscription-cache! []
-  (doseq [[_ sub] @sub-cache]
-    (dispose! sub)))
+;; --- subscriptions ----------------------------------------------------------
 
 (deftype Listeners [^:mutable listeners]
   Object
@@ -109,7 +119,8 @@
 (deftype Sub [query-v input compute-fn
               ^:mutable value
               ^:mutable dirty?
-              ^Listeners listeners]
+              ^Listeners listeners
+              cache]
 
   ISub
   (-query-v [_] query-v)
@@ -124,7 +135,7 @@
   (-remove-listener [this k]
     (.remove listeners k)
     (when (.empty? listeners)
-      (sub-orphaned this)))
+      (-sub-orphaned cache this)))
 
   Object
   (init! [this]
@@ -156,19 +167,19 @@
        (-hash [this] (goog/getUid this))]))
 
 (defn- make-sub
-  [query-v input compute-fn]
+  [cache query-v input compute-fn]
   (let [value (compute-sub query-v input compute-fn)
-        sub   (->Sub query-v input compute-fn value false (make-listeners))]
+        sub   (->Sub query-v input compute-fn value false (make-listeners) cache)]
     (.init! sub)
     sub))
 
 ;; --- register ---------------------------------------------------------------
 
 (defn register
-  [query-id input-fn compute-fn]
+  [{:keys [subscription-cache registry]} query-id input-fn compute-fn]
   (letfn [(handler-fn [query-v]
-            (make-sub query-v (input-fn query-v) compute-fn))]
-    (registry/add! kind query-id handler-fn)))
+            (make-sub subscription-cache query-v (input-fn query-v) compute-fn))]
+    (registry/add! registry kind query-id handler-fn)))
 
 ;; --- dynamic ----------------------------------------------------------------
 ;;
@@ -185,7 +196,8 @@
 ;; vector, and a mutable "value-sub" that is updated whenever the query sub
 ;; changes.
 (deftype DynamicSub [query-v handler-fn query-sub ^:mutable value-sub
-                     ^Listeners listeners]
+                     ^Listeners listeners
+                     cache]
   ISub
   (-query-v [_] query-v)
   (-orphan? [_] (.empty? listeners))
@@ -202,7 +214,7 @@
   (-remove-listener [this k]
     (.remove listeners k)
     (when (.empty? listeners)
-      (sub-orphaned this)))
+      (-sub-orphaned cache this)))
 
   Object
   (init! [this]
@@ -213,7 +225,7 @@
     (let [qv (-value query-sub)]
       (when value-sub
         (-remove-listener value-sub this))
-      (set! value-sub (or (cache-lookup qv)
+      (set! value-sub (or (-cache-lookup cache qv)
                           (handler-fn qv)))
       (-add-listener value-sub this #(.notify listeners))
       (.notify listeners)))
@@ -256,30 +268,32 @@
 
 (defn- make-dynamic
   "Make a dynamic subscription."
-  [query-v handler-fn]
-  (let [query-sub (make-sub [::query query-v] (dynamic-input query-v) dynamic-compute)
-        dynamic   (->DynamicSub query-v handler-fn query-sub nil (make-listeners))]
+  [cache query-v handler-fn]
+  (let [query-sub (make-sub cache [::query query-v] (dynamic-input query-v) dynamic-compute)
+        dynamic   (->DynamicSub query-v handler-fn query-sub nil (make-listeners) cache)]
     (.init! dynamic)
     dynamic))
 
 ;; --- sub --------------------------------------------------------------------
 
-(defn- create-sub [query-v]
-  (let [query-id (utils/first-in-vector query-v)]
-    ;; Note that nil is a valid signal!
-    (when-let [handler-fn (registry/lookup kind query-id)]
-      (let [sub (if (dynamic? query-v)
-                  (make-dynamic query-v handler-fn)
-                  (handler-fn query-v))]
-        (cache-add! query-v sub)
-        sub))))
-
-(defn sub
+(defn mk-subscriber
   "Returns a subscription to `query-v`.
 
    Callers must make sure that the returned object is eventually used, or it
    will leak memory.  This is designed to construct custom subscriptions in
    handlers, React components should use the `use-sub` hook instead."
-  [query-v]
-  (or (cache-lookup query-v)
-      (create-sub query-v)))
+  [{:keys [subscription-cache registry]}]
+  (letfn [(create-sub [query-v]
+            (let [query-id (utils/first-in-vector query-v)]
+              ;; Note that nil is a valid signal!
+              (when-let [handler-fn (registry/lookup registry kind query-id)]
+                (let [sub (if (dynamic? query-v)
+                            (make-dynamic subscription-cache query-v handler-fn)
+                            (handler-fn query-v))]
+                  (-cache-add! subscription-cache query-v sub)
+                  sub))))]
+
+    (fn sub
+      [query-v]
+      (or (-cache-lookup subscription-cache query-v)
+          (create-sub query-v)))))

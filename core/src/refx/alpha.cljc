@@ -11,136 +11,158 @@
             [refx.subs :as subs]
             [refx.utils :as utils]))
 
-;; --- dispatch ---------------------------------------------------------------
+(defprotocol IFrame
 
-(defn dispatch
-  [event]
-  (dispatch/dispatch event))
+  ;; --- dispatch ---------------------------------------------------------------
 
-(defn dispatch-sync
-  [event]
-  (dispatch/dispatch-sync event))
+  (dispatch [this event])
 
-;; --- events -----------------------------------------------------------------
+  (dispatch-sync [this event])
 
-;; TODO: Provide a registry of interceptors as well, so they can be referenced by ID.
+  ;; --- events -----------------------------------------------------------------
 
-(def base-interceptors
-  [cofx/inject-db effects/do-fx interceptors/inject-global-interceptors])
+  ;; TODO: Provide a registry of interceptors as well, so they can be referenced by ID.
 
-(defn- -reg-event [id interceptors handler-interceptor]
-  (events/register id (conj base-interceptors interceptors handler-interceptor)))
+  (reg-event [this id interceptors handler-interceptor])
 
-(defn reg-event-db
-  ([id handler]
-   (reg-event-db id nil handler))
-  ([id interceptors handler]
-   (-reg-event id interceptors (events/db-handler->interceptor handler))))
+  (clear-event [this] [this id])
 
-(defn reg-event-fx
-  ([id handler]
-   (reg-event-fx id nil handler))
-  ([id interceptors handler]
-   (-reg-event id interceptors (events/fx-handler->interceptor handler))))
+  ;; --- subscriptions ----------------------------------------------------------
 
-(defn reg-event-ctx
-  ([id handler]
-   (reg-event-ctx id nil handler))
-  ([id interceptors handler]
-   (-reg-event id interceptors (events/ctx-handler->interceptor handler))))
+  (sub [this query-v])
 
-(defn clear-event
-  ([]
-   (registry/clear! events/kind))
-  ([id]
-   (registry/remove! events/kind id)))
+  (reg-sub
+    [this query-id compute-fn]
+    [this query-id input-fn compute-fn])
 
-;; --- subscriptions ----------------------------------------------------------
+  (clear-sub [this] [this id])
 
-(defn sub
-  "Return a subscription signal to be used as an input in `reg-sub`."
-  [query-v]
-  (subs/sub query-v))
+  (clear-subscription-cache! [this])
 
-(defn <-
-  "Like re-frame's `:<-` sugar, returns an `input-fn` for `reg-sub` that
-   subscribes to one or more query vectors."
-  ([query-v]
-   (fn [_] (subs/sub query-v)))
-  ([query-v & qs]
-   (let [qs (cons query-v qs)]
-     (fn [_] (mapv subs/sub qs)))))
+  ;; --- effects ----------------------------------------------------------------
 
-(defn- parse-reg-sub-sugar [args]
-  (let [[qs f] (reduce (fn [[qs f] [op arg]]
-                         (case op
-                           :<- [(conj qs arg) f]
-                           :-> [qs (fn [v] (arg v))]
-                           :=> [qs (fn [v [_ & vs]] (apply arg v vs))]
-                           [qs op]))
-                       [[] nil]
-                       (partition-all 2 args))]
-    [(if (seq qs)
-       (apply <- qs)
-       (constantly app-db))
-     f]))
+  (reg-fx [this id handler])
 
-(defn reg-sub
-  ([query-id compute-fn]
-   (subs/register query-id (constantly app-db) compute-fn))
-  ([query-id input-fn compute-fn]
-   (if (keyword? input-fn)
-     ;; If we have a keyword, attempt parsing syntax sugar.
-     (let [[input-fn compute-fn] (parse-reg-sub-sugar [input-fn compute-fn])]
-       (subs/register query-id input-fn compute-fn))
-     (subs/register query-id input-fn compute-fn)))
-  ([query-id x y z & args]
-   (let [[input-fn compute-fn] (parse-reg-sub-sugar (list* x y z args))]
-     (subs/register query-id input-fn compute-fn))))
+  (clear-fx [this] [this id])
 
-#?(:cljs
-   (defn use-sub [query-v]
-     (hooks/use-sub query-v)))
+  ;; --- coeffects --------------------------------------------------------------
 
-(defn clear-sub
-  ([]
-   (registry/clear! subs/kind))
-  ([id]
-   (registry/remove! subs/kind id)))
+  (reg-cofx [this id handler])
 
-(defn clear-subscription-cache! []
-  (subs/clear-subscription-cache!))
+  (clear-cofx [this] [this id])
 
-;; --- effects ----------------------------------------------------------------
+  (inject-cofx [this id] [this id value]))
 
-(defn reg-fx
-  [id handler]
-  (effects/register id handler))
+(defrecord Frame [registry app-db subscription-cache subscription-handler dispatcher interceptors]
 
-(defn clear-fx
-  ([]
-   (registry/clear! effects/kind))
-  ([id]
-   (registry/remove! effects/kind id)))
+  IFrame
 
-;; --- coeffects --------------------------------------------------------------
+  ;; --- dispatch ---------------------------------------------------------------
 
-(defn reg-cofx
-  [id handler]
-  (cofx/register id handler))
+  (dispatch
+    [this event]
+    ((:dispatch dispatcher) event))
 
-(defn clear-cofx
-  ([]
-   (registry/clear! cofx/kind))
-  ([id]
-   (registry/remove! cofx/kind id)))
+  (dispatch-sync
+    [this event]
+    ((:dispatch-sync dispatcher) event))
 
-(defn inject-cofx
-  ([id]
-   (cofx/inject-cofx id))
-  ([id value]
-   (cofx/inject-cofx id value)))
+  ;; --- events -----------------------------------------------------------------
+
+  ;; TODO: Provide a registry of interceptors as well, so they can be referenced by ID.
+
+  (reg-event [this id extra-interceptors handler-interceptor]
+    (events/register registry id (conj interceptors extra-interceptors handler-interceptor)))
+
+  (clear-event
+    [this]
+    (registry/clear! registry events/kind))
+
+  (clear-event
+    [this id]
+    (registry/remove! registry events/kind id))
+
+  ;; --- subscriptions ----------------------------------------------------------
+
+  (sub
+    [this query-v]
+    (subscription-handler this query-v))
+
+  (reg-sub [this query-id compute-fn]
+    (subs/register this query-id (constantly app-db) compute-fn))
+  (reg-sub [this query-id input-fn compute-fn]
+    (subs/register this query-id input-fn compute-fn))
+
+  (clear-sub [this]
+    (registry/clear! registry subs/kind))
+  (clear-sub [this id]
+    (registry/remove! registry subs/kind id))
+
+  (clear-subscription-cache! [this]
+    (subs/-cache-clear! subscription-cache))
+
+  ;; --- effects ----------------------------------------------------------------
+
+  (reg-fx
+    [this id handler]
+    (effects/register this id handler))
+
+  (clear-fx [this]
+    (registry/clear! registry effects/kind))
+  (clear-fx [this id]
+    (registry/remove! registry effects/kind id))
+
+  ;; --- coeffects --------------------------------------------------------------
+
+  (reg-cofx
+    [this id handler]
+    (cofx/register this id handler))
+
+  (clear-cofx [this]
+    (registry/clear! registry  cofx/kind))
+
+  (clear-cofx [this id]
+    (registry/remove! registry cofx/kind id))
+
+  (inject-cofx [this id]
+    (cofx/inject-cofx this id))
+
+  (inject-cofx [this id value]
+    (cofx/inject-cofx this id value)))
 
 (defn ->interceptor
   [& {:as m}]
   (utils/apply-kw interceptor/->interceptor m))
+
+(defn reg-event-db
+  ([frame id handler]
+   (reg-event-db id nil handler))
+  ([frame id interceptors handler]
+   (reg-event frame id interceptors (events/db-handler->interceptor handler))))
+
+(defn reg-event-fx
+  ([frame id handler]
+   (reg-event-fx id nil handler))
+  ([frame id interceptors handler]
+   (reg-event frame id interceptors (events/fx-handler->interceptor handler))))
+
+(defn reg-event-ctx
+  ([frame id handler]
+   (reg-event-ctx id nil handler))
+  ([frame id interceptors handler]
+   (reg-event frame id interceptors (events/ctx-handler->interceptor handler))))
+
+#?(:cljs (defn subscription-hook [this]
+           (hooks/get-subscription-hook this)))
+
+(defn new-frame []
+  (let [reg (atom {})
+        db (atom {})
+        subscription-cache (atom {})
+        subscription-handler (subs/mk-subscriber {:registry reg :subscription-cache subscription-cache})
+        event-handler (events/mk-handler reg)
+        dispatcher (dispatch/mk-dispatcher {:event-handler event-handler})
+        do-fx (effects/init {:app-db db :dispatcher dispatcher :registry reg})
+        inject-db (cofx/init {:registry reg})]
+    ;;[registry app-db subscription-cache subscription-handler dispatcher interceptors]
+    (->Frame reg db subscription-cache subscription-handler dispatcher [do-fx inject-db])))

@@ -7,26 +7,26 @@
 (def kind :cofx)
 
 (defn register
-  [id handler]
-  (registry/add! kind id handler))
+  [registry id handler]
+  (registry/add! registry kind id handler))
 
 ;; -- Interceptor -------------------------------------------------------------
 
 (defn inject-cofx
-  ([id]
+  ([registry id]
    (->interceptor
     :id      :coeffects
     :before  (fn coeffects-before
                [context]
-               (if-let [handler (registry/lookup kind id)]
+               (if-let [handler (registry/lookup registry kind id)]
                  (update context :coeffects handler)
                  (log/error "No cofx handler registered for" id)))))
-  ([id value]
+  ([registry id value]
    (->interceptor
     :id     :coeffects
     :before  (fn coeffects-before
                [context]
-               (if-let [handler (registry/lookup kind id)]
+               (if-let [handler (registry/lookup registry kind id)]
                  (update context :coeffects handler value)
                  (log/error "No cofx handler registered for" id))))))
 
@@ -35,12 +35,12 @@
 ;; :db
 ;;
 ;; Adds to coeffects the value in `app-db`, under the key `:db`
-(register
- :db
- (fn db-coeffects-handler
-   [coeffects]
-   (assoc coeffects :db @app-db)))
-
-;; Because this interceptor is used so much, we reify it
-(def inject-db (inject-cofx :db))
-
+(defn init [{:keys [registry]}]
+  (register
+   registry
+   :db
+   (fn db-coeffects-handler
+     [coeffects]
+     (assoc coeffects :db @app-db)))
+  ;; TODO this should be returned as value
+  (inject-cofx registry :db))

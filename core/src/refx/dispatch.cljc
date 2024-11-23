@@ -29,7 +29,8 @@
 
 (deftype EventQueue [^:mutable fsm-state
                      ^:mutable queue
-                     ^:mutable post-event-callback-fns]
+                     ^:mutable post-event-callback-fns
+                     event-handler]
   IEventQueue
 
   (push [this event]
@@ -84,7 +85,7 @@
     [this]
     (let [event-v (peek queue)]
       (try
-        (events/handle event-v)
+        (event-handler event-v)
         (set! queue (pop queue))
         (-call-post-event-callbacks this event-v)
         (catch #?(:cljs :default :clj Exception) ex
@@ -123,18 +124,20 @@
     (-process-1st-event-in-queue this)
     (-run-queue this)))
 
-;; TODO: Will there ever be more than one?
-(def event-queue (->EventQueue :idle empty-queue {}))
+(defn mk-dispatcher [{:keys [event-handler]}]
 
-(defn dispatch
-  [event]
-  (if (nil? event)
-    (throw (ex-info "you called \"dispatch\" without an event vector." {}))
-    (push event-queue event))
-  nil)
+  (let [event-queue (->EventQueue :idle empty-queue {} event-handler)]
 
-(defn dispatch-sync
-  [event-v]
-  (events/handle event-v)
-  (-call-post-event-callbacks event-queue event-v)
-  nil)
+    {:queue event-queue
+     :dispatch (fn dispatch
+                 [event]
+                 (if (nil? event)
+                   (throw (ex-info "you called \"dispatch\" without an event vector." {}))
+                   (push event-queue event))
+                 nil)
+
+     :dispatch-sync (fn dispatch-sync
+                      [event-v]
+                      (event-handler event-v)
+                      (-call-post-event-callbacks event-queue event-v)
+                      nil)}))

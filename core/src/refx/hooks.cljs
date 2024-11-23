@@ -17,24 +17,26 @@
 
 (defonce ^:private use-sub-counter (atom 0))
 
-(defn use-sub
+(defn get-subscription-hook
   "React hook to subscribe to signals."
-  [query-v]
-  ;; Subs are cached, so no need to memoize them again.  Retrieving them
-  ;; on every render allows us to pick up changes in dev workflows, where
-  ;; we use clear-subscription-cache! on refresh.
-  (let [sub (subs/sub query-v)
-        [subscribe snapshot]
-        (react/useMemo
-         (fn []
-           [(fn [callback]
-              (let [key (str "use-sub-" (swap! use-sub-counter inc))]
-                (subs/-add-listener sub key callback)
-                #(subs/-remove-listener sub key)))
-            (fn []
-              (subs/-value sub))])
-         (cljs-deps sub))]
-    ;; Expose the query vector in React DevTools.  The current value will
-    ;; be inspectable by `useSyncExternalStore` already.
-    (react/useDebugValue query-v str)
-    (useSyncExternalStore subscribe snapshot)))
+  [{:keys [registry subscription-cache subscriber]}]
+  (fn use-sub
+    [query-v]
+     ;; Subs are cached, so no need to memoize them again.  Retrieving them
+     ;; on every render allows us to pick up changes in dev workflows, where
+     ;; we use clear-subscription-cache! on refresh.
+    (let [sub (subscriber query-v)
+          [subscribe snapshot]
+          (react/useMemo
+           (fn []
+             [(fn [callback]
+                (let [key (str "use-sub-" (swap! use-sub-counter inc))]
+                  (subs/-add-listener sub key callback)
+                  #(subs/-remove-listener sub key)))
+              (fn []
+                (subs/-value sub))])
+           (cljs-deps sub))]
+       ;; Expose the query vector in React DevTools.  The current value will
+       ;; be inspectable by `useSyncExternalStore` already.
+      (react/useDebugValue query-v str)
+      (useSyncExternalStore subscribe snapshot))))

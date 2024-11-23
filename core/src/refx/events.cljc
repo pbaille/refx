@@ -35,24 +35,27 @@
 
    Typically, an `event handler` will be at the end of the chain (wrapped
    in an interceptor)."
-  [id interceptors]
-  (registry/add! kind id (flatten-and-remove-nils id interceptors)))
+  [registry id interceptors]
+  (registry/add! registry kind id (flatten-and-remove-nils id interceptors)))
 
 ;; --- handle event -----------------------------------------------------------
 
 (def ^:dynamic *handling* nil)
 
-(defn handle
+(defn mk-handler
   "Given an event vector `event-v`, look up the associated interceptor chain,
    and execute it."
-  [event-v]
-  (let [event-id (first-in-vector event-v)]
-    (when-let [interceptors (registry/lookup kind event-id)]
-      (if *handling*
-        (log/error "while handling" *handling* ", dispatch-sync was called for" event-v
-                   ". You can't call dispatch-sync within an event handler.")
-        (binding [*handling*  event-v]
-          (interceptor/execute event-v interceptors))))))
+  [registry]
+  (binding [*handling* nil]
+    (fn handle
+      [event-v]
+      (let [event-id (first-in-vector event-v)]
+        (when-let [interceptors (registry/lookup registry kind event-id)]
+          (if *handling*
+            (log/error "while handling" *handling* ", dispatch-sync was called for" event-v
+                       ". You can't call dispatch-sync within an event handler.")
+            (binding [*handling*  event-v]
+              (interceptor/execute event-v interceptors))))))))
 
 ;; --- handler->interceptor ---------------------------------------------------
 
