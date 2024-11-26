@@ -75,10 +75,10 @@
     ;;                       {:ms 100 :dispatch [:another-one]}]}
     ;;
     (letfn [(dispatch-later
-              [{:keys [ms dispatch] :as effect}]
-              (if (or (empty? dispatch) (not (number? ms)))
+              [{:keys [ms] event :dispatch :as effect}]
+              (if (or (empty? event) (not (number? ms)))
                 (log/error "ignoring bad :dispatch-later value:" effect)
-                (interop/set-timeout! #(dispatch dispatch) ms)))]
+                (interop/set-timeout! #(dispatch event) ms)))]
 
       (register
        registry
