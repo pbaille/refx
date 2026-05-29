@@ -165,5 +165,4 @@
         do-fx (effects/init {:app-db db :dispatcher dispatcher :registry reg})
         inject-db (cofx/init {:registry reg :app-db db})
         frame (->Frame reg db subscription-cache subscription-handler dispatcher [do-fx inject-db])]
-    #?(:cljs (cljs.pprint/pprint frame))
     frame))
